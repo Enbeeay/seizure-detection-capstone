@@ -1,0 +1,150 @@
+<svg width="1600" height="900" viewBox="0 0 1600 900" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Seizure Forecasting Pipeline</title>
+  <desc id="desc">Presentation visual showing the EEG seizure forecasting pipeline from MATLAB files through preprocessing, feature extraction, sequence forecasting, calibration, evaluation, and outputs.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f7f4ea"/>
+      <stop offset="100%" stop-color="#edf4f8"/>
+    </linearGradient>
+    <linearGradient id="titleBar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#0f4c5c"/>
+      <stop offset="100%" stop-color="#2c7a7b"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#12343b" flood-opacity="0.15"/>
+    </filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#365c66"/>
+    </marker>
+    <style>
+      .title { font: 700 34px 'Segoe UI', Arial, sans-serif; fill: #ffffff; }
+      .subtitle { font: 500 16px 'Segoe UI', Arial, sans-serif; fill: #d9eef2; }
+      .section { font: 700 22px 'Segoe UI', Arial, sans-serif; fill: #17323a; }
+      .box-title { font: 700 18px 'Segoe UI', Arial, sans-serif; fill: #17323a; }
+      .box-text { font: 500 14px 'Segoe UI', Arial, sans-serif; fill: #25464f; }
+      .small { font: 600 13px 'Segoe UI', Arial, sans-serif; fill: #2b535d; }
+      .arrow-label { font: 600 13px 'Segoe UI', Arial, sans-serif; fill: #365c66; }
+      .stat { font: 700 15px 'Segoe UI', Arial, sans-serif; fill: #6b4f00; }
+      .muted { font: 500 13px 'Segoe UI', Arial, sans-serif; fill: #55727b; }
+      .frame { fill: url(#bg); }
+      .panel { fill: #ffffff; stroke: #d5e2e6; stroke-width: 2; rx: 26; filter: url(#shadow); }
+      .input { fill: #fff4d6; stroke: #e7c86b; stroke-width: 2; }
+      .prep { fill: #e7f5ef; stroke: #7bc2a3; stroke-width: 2; }
+      .model { fill: #e8eefc; stroke: #88a2e8; stroke-width: 2; }
+      .calib { fill: #f9e8f1; stroke: #d69abc; stroke-width: 2; }
+      .output { fill: #fff0e5; stroke: #e9a56f; stroke-width: 2; }
+      .branch { fill: #f5f8fa; stroke: #c8d8de; stroke-width: 2; }
+      .line { stroke: #365c66; stroke-width: 4; fill: none; marker-end: url(#arrow); }
+      .thin { stroke: #6d8a92; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .dashed { stroke-dasharray: 8 8; }
+    </style>
+  </defs>
+
+  <rect class="frame" x="0" y="0" width="1600" height="900"/>
+
+  <rect x="45" y="35" width="1510" height="100" rx="24" fill="url(#titleBar)" filter="url(#shadow)"/>
+  <text class="title" x="80" y="82">Seizure Forecasting Pipeline</text>
+  <text class="subtitle" x="80" y="112">From raw EEG .mat clips to preictal probability, metrics, and presentation figures</text>
+
+  <text class="section" x="75" y="180">1. Data Intake</text>
+  <text class="section" x="420" y="180">2. Clip Preparation</text>
+  <text class="section" x="925" y="180">3. Modeling and Scoring</text>
+  <text class="section" x="1290" y="180">4. Outputs</text>
+
+  <rect class="panel input" x="60" y="210" width="300" height="135" rx="24"/>
+  <text class="box-title" x="85" y="248">EEG Dataset</text>
+  <text class="box-text" x="85" y="280">Labeled train clips</text>
+  <text class="box-text" x="85" y="304">Public-labeled test clips</text>
+  <text class="box-text" x="85" y="328">MATLAB `.mat` recordings</text>
+
+  <rect class="panel input" x="60" y="390" width="300" height="155" rx="24"/>
+  <text class="box-title" x="85" y="428">Index and Parse</text>
+  <text class="box-text" x="85" y="460">Read filenames and infer:</text>
+  <text class="box-text" x="85" y="484">patient ID, segment ID, split, label</text>
+  <text class="small" x="85" y="517">collect_records()</text>
+  <text class="small" x="85" y="537">apply_public_test_labels()</text>
+
+  <path class="line" d="M210 345 L210 390"/>
+
+  <rect class="panel prep" x="410" y="210" width="455" height="370" rx="28"/>
+  <text class="box-title" x="440" y="248">Prepare Each Clip</text>
+  <text class="box-text" x="440" y="282">1. Load `.mat` EEG file</text>
+  <text class="box-text" x="440" y="310">2. Remove all-zero dropout rows</text>
+  <text class="box-text" x="440" y="338">3. Normalize each channel</text>
+  <text class="box-text" x="440" y="366">4. Downsample to target rate (100 Hz)</text>
+  <text class="box-text" x="440" y="394">5. Split into 10 s windows</text>
+  <text class="box-text" x="440" y="422">6. Build features:</text>
+  <text class="box-text" x="470" y="450">Time: pooled window means</text>
+  <text class="box-text" x="470" y="478">Spectral: Welch PSD, band powers,</text>
+  <text class="box-text" x="470" y="502">entropy, and peak frequency</text>
+  <text class="box-text" x="440" y="534">7. Return a vector sequence for each file</text>
+  <text class="small" x="440" y="560">Feature modes: time, spectral, both</text>
+
+  <path class="line" d="M360 487 L410 487"/>
+
+  <rect class="panel branch" x="410" y="605" width="455" height="175" rx="28"/>
+  <text class="box-title" x="440" y="630">Dataset Split</text>
+  <text class="box-text" x="440" y="662">Forecaster train set</text>
+  <text class="box-text" x="440" y="692">Calibration set</text>
+  <text class="box-text" x="440" y="722">Validation set</text>
+  <text class="box-text" x="635" y="662">Public test set</text>
+  <text class="box-text" x="635" y="692">All test set</text>
+  <text class="small" x="440" y="742">Each split is prepared into per-file feature sequences.</text>
+  <text class="muted" x="440" y="764">This preparation stage is the slowest part of the pipeline.</text>
+
+  <path class="thin dashed" d="M635 580 L635 605"/>
+
+  <rect class="panel model" x="920" y="210" width="300" height="175" rx="24"/>
+  <text class="box-title" x="945" y="248">Sequence Forecaster</text>
+  <text class="box-text" x="945" y="280">Input: last 6 windows of features</text>
+  <text class="box-text" x="945" y="308">Model: encoder + GRU + decoder</text>
+  <text class="box-text" x="945" y="336">Task: predict next EEG feature window</text>
+  <text class="small" x="945" y="360">Trained with MSE loss on the forecaster split.</text>
+
+  <rect class="panel model" x="920" y="425" width="300" height="175" rx="24"/>
+  <text class="box-title" x="945" y="453">Anomaly Scoring</text>
+  <text class="box-text" x="945" y="485">Score each file by forecast error</text>
+  <text class="box-text" x="945" y="513">Summaries: mean, std, max, p90, p95</text>
+  <text class="box-text" x="945" y="541">Higher error suggests preictal behavior</text>
+
+  <rect class="panel calib" x="920" y="635" width="300" height="145" rx="24"/>
+  <text class="box-title" x="945" y="658">Probability Calibration</text>
+  <text class="box-text" x="945" y="690">Logistic regression on summary scores</text>
+  <text class="box-text" x="945" y="718">Outputs calibrated preictal probability</text>
+  <text class="small" x="945" y="742">Fit on calibration split, then applied</text>
+  <text class="small" x="945" y="760">to validation and test.</text>
+
+  <path class="line" d="M865 310 L920 310"/>
+  <path class="line" d="M865 692 L920 498"/>
+  <path class="line" d="M1070 385 L1070 425"/>
+  <path class="line" d="M1070 600 L1070 635"/>
+
+  <rect class="panel output" x="1270" y="210" width="260" height="210" rx="24"/>
+  <text class="box-title" x="1280" y="248">Metrics</text>
+  <text class="box-text" x="1280" y="280">Accuracy</text>
+  <text class="box-text" x="1280" y="308">ROC AUC</text>
+  <text class="box-text" x="1280" y="336">PR AUC</text>
+  <text class="box-text" x="1280" y="364">Confusion matrix</text>
+  <text class="small" x="1280" y="394">Validation and public-test evaluation</text>
+
+  <rect class="panel output" x="1270" y="465" width="260" height="180" rx="24"/>
+  <text class="box-title" x="1280" y="503">Saved Artifacts</text>
+  <text class="box-text" x="1280" y="535">Model checkpoint</text>
+  <text class="box-text" x="1280" y="563">Calibrator</text>
+  <text class="box-text" x="1280" y="591">Prediction CSVs</text>
+  <text class="box-text" x="1280" y="619">metrics.json</text>
+
+  <rect class="panel output" x="1270" y="690" width="260" height="110" rx="24"/>
+  <text class="box-title" x="1280" y="728">Presentation Figures</text>
+  <text class="box-text" x="1280" y="752">Training-loss curve</text>
+  <text class="box-text" x="1280" y="776">Probability histograms</text>
+
+  <path class="line" d="M1220 700 L1270 745"/>
+  <path class="thin" d="M1220 680 L1270 555"/>
+  <path class="thin" d="M1220 670 L1270 315"/>
+
+  <rect x="70" y="818" width="1470" height="54" rx="18" fill="#fff9e8" stroke="#e7c86b" stroke-width="2"/>
+  <text class="stat" x="95" y="851">Presentation takeaway:</text>
+  <text class="box-text" x="280" y="844">EEG clips are converted into time or spectral window sequences, a forecaster learns</text>
+  <text class="box-text" x="280" y="864">normal temporal patterns, and forecast error becomes a file-level seizure-risk probability.</text>
+</svg>

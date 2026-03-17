@@ -1,0 +1,17 @@
+{
+  "train_path": "D:\\seizure-detection-data\\Pat1Train_1009_0.mat",
+  "train_label": "interictal",
+  "eval_path": "D:\\seizure-detection-data\\Pat1Train_100_1.mat",
+  "eval_label": "preictal",
+  "window_seconds": 5.0,
+  "stride_seconds": 1.0,
+  "history_steps": 3,
+  "train_windows": 593,
+  "eval_windows": 593,
+  "train_score_mean": 0.0010067007970064878,
+  "eval_score_mean": 18.056838989257812,
+  "train_score_std": 0.0007806557696312666,
+  "eval_score_std": 3.018461227416992,
+  "roc_auc": 1.0,
+  "pr_auc": 1.0
+}

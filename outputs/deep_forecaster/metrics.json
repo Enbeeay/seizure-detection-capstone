@@ -1,0 +1,43 @@
+{
+  "device": "cpu",
+  "forecaster_train_files": 3028,
+  "calibration_files": 1009,
+  "validation_files": 1010,
+  "public_test_files": 564,
+  "all_test_files": 1908,
+  "sequence_examples": 163494,
+  "epochs": 6,
+  "history_steps": 6,
+  "window_seconds": 10,
+  "stride_seconds": 10,
+  "target_rate": 100,
+  "pool_bins": 50,
+  "training_losses": [
+    0.27530176542188123,
+    0.2711930583179918,
+    0.2698097607953886,
+    0.26892444515393205,
+    0.26827152852191255,
+    0.26774193934438856
+  ],
+  "validation_metrics": {
+    "accuracy": 0.601980198019802,
+    "threshold": 0.5,
+    "true_negative": 531,
+    "false_positive": 332,
+    "false_negative": 70,
+    "true_positive": 77,
+    "roc_auc": 0.647109828867816,
+    "pr_auc": 0.22366661477619892
+  },
+  "public_test_metrics": {
+    "accuracy": 0.6081560283687943,
+    "threshold": 0.5,
+    "true_negative": 307,
+    "false_positive": 205,
+    "false_negative": 16,
+    "true_positive": 36,
+    "roc_auc": 0.6876878004807693,
+    "pr_auc": 0.21631421486142893
+  }
+}
