@@ -1,8 +1,6 @@
 # Seizure Forecasting Demo
 
-This repo now includes a small Python demo that treats interictal EEG as the
-"normal" state, learns to forecast the next feature window from recent history,
-and uses forecast error as an anomaly score for preictal detection.
+This project is a machine learning pipeline for seizure prediction using intracranial EEG (iEEG) data from the Melbourne-University AES-MathWorks-NIH Seizure Prediction Challenge dataset. The system processes raw .mat EEG recordings, removes invalid signals, normalizes and downsamples the data, splits each recording into time windows, and extracts time-domain and spectral features. These features are then used in deep learning and statistical models to distinguish preictal brain activity (the period leading up to a seizure) from interictal activity (normal periods between seizures). The goal of the project is to improve seizure prediction performance on highly imbalanced EEG data while reducing false positives and building a pipeline that can be extended with patient-specific modeling and more advanced architectures.
 
 ## What it does
 
