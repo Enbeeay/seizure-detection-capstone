@@ -12,6 +12,7 @@ import torch
 from sklearn.model_selection import train_test_split
 from tqdm.auto import tqdm
 
+from eeg_demo.advanced_eeg_features import AdvancedFeatureConfig
 from eeg_demo.dataset import filter_records
 from eeg_demo.deep_forecaster import (
     PreparedClip,
@@ -37,11 +38,15 @@ def prepare_many(
     stride_seconds,
     pool_bins,
     feature_mode,
+    advanced_config: AdvancedFeatureConfig | None = None,
     *,
     desc: str = "Prepare clips",
     show_progress: bool = True,
+    feature_debug_first: bool = False,
+    log_feature_progress: bool = False,
 ):
     clips: list[PreparedClip] = []
+    adv = advanced_config or AdvancedFeatureConfig()
     iterator = tqdm(
         records,
         desc=desc,
@@ -49,7 +54,7 @@ def prepare_many(
         disable=not show_progress,
         smoothing=0.05,
     )
-    for record in iterator:
+    for clip_idx, record in enumerate(iterator):
         name = record.path.name
         iterator.set_postfix_str(name[:48] + ("…" if len(name) > 48 else ""))
         try:
@@ -61,6 +66,9 @@ def prepare_many(
                     stride_seconds=stride_seconds,
                     pool_bins=pool_bins,
                     feature_mode=feature_mode,
+                    advanced_config=adv,
+                    log_feature_progress=log_feature_progress,
+                    feature_debug=feature_debug_first and clip_idx == 0,
                 )
             )
         except Exception as exc:
@@ -185,6 +193,18 @@ def _subsample_train_records(records, max_files: int | None, random_state: int) 
     return list(records[:max_files])
 
 
+def advanced_config_from_args(args) -> AdvancedFeatureConfig:
+    return AdvancedFeatureConfig(
+        use_existing_features=not args.no_existing_features,
+        use_plv=args.use_plv,
+        use_riemannian=args.use_riemannian,
+        plv_feature_mode=args.plv_feature_mode,
+        riemannian_mode=args.riemannian_mode,
+        covariance_regularization=args.covariance_regularization,
+        include_low_gamma_plv=not args.plv_no_low_gamma,
+    )
+
+
 def _subsample_public_test_records(records, max_files: int | None, random_state: int) -> list:
     if not max_files or len(records) <= max_files:
         return list(records)
@@ -212,6 +232,12 @@ def run_single_training(
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    adv = advanced_config_from_args(args)
+    if not adv.use_existing_features and not adv.use_plv and not adv.use_riemannian:
+        raise ValueError(
+            "At least one of existing (time/spectral), PLV, or Riemannian features must be enabled."
+        )
+
     train_records = _subsample_train_records(train_records, args.max_train_files, args.random_state)
     public_test_records = _subsample_public_test_records(
         public_test_records, args.max_test_files, args.random_state
@@ -230,7 +256,11 @@ def run_single_training(
         f"validation={len(validation_records)} public_test={len(public_test_records)} all_test={len(all_test_records)}"
     )
 
-    _prep_kw = {"show_progress": show_progress}
+    _prep_kw = {
+        "show_progress": show_progress,
+        "advanced_config": adv,
+        "log_feature_progress": args.feature_log,
+    }
     forecaster_clips = prepare_many(
         forecaster_records,
         args.target_rate,
@@ -239,8 +269,10 @@ def run_single_training(
         args.pool_bins,
         args.feature_mode,
         desc="Prepare forecaster",
+        feature_debug_first=args.feature_debug,
         **_prep_kw,
     )
+    _prep_rest = {**_prep_kw, "feature_debug_first": False}
     calibration_clips = prepare_many(
         calibration_records,
         args.target_rate,
@@ -249,7 +281,7 @@ def run_single_training(
         args.pool_bins,
         args.feature_mode,
         desc="Prepare calibration",
-        **_prep_kw,
+        **_prep_rest,
     )
     validation_clips = prepare_many(
         validation_records,
@@ -259,7 +291,7 @@ def run_single_training(
         args.pool_bins,
         args.feature_mode,
         desc="Prepare validation",
-        **_prep_kw,
+        **_prep_rest,
     )
     public_test_clips = prepare_many(
         public_test_records,
@@ -269,7 +301,7 @@ def run_single_training(
         args.pool_bins,
         args.feature_mode,
         desc="Prepare public test",
-        **_prep_kw,
+        **_prep_rest,
     )
     all_test_clips = prepare_many(
         all_test_records,
@@ -279,14 +311,17 @@ def run_single_training(
         args.pool_bins,
         args.feature_mode,
         desc="Prepare all test",
-        **_prep_kw,
+        **_prep_rest,
     )
 
     input_dim = forecaster_clips[0].vectors.shape[1]
     dataset = WindowSequenceDataset(forecaster_clips, history_steps=args.history_steps)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[device] {device}")
-    print(f"[dataset] sequence_examples={len(dataset)} input_dim={input_dim}")
+    print(
+        f"[dataset] sequence_examples={len(dataset)} input_dim={input_dim} "
+        f"windows_per_first_clip={forecaster_clips[0].vectors.shape[0]}"
+    )
 
     model = SequenceForecaster(input_dim=input_dim)
     losses = train_model(
@@ -420,6 +455,13 @@ def run_single_training(
         "target_rate": args.target_rate,
         "pool_bins": args.pool_bins,
         "feature_mode": args.feature_mode,
+        "use_existing_features": adv.use_existing_features,
+        "use_plv": adv.use_plv,
+        "use_riemannian": adv.use_riemannian,
+        "plv_feature_mode": adv.plv_feature_mode,
+        "riemannian_mode": adv.riemannian_mode,
+        "covariance_regularization": adv.covariance_regularization,
+        "include_low_gamma_plv": adv.include_low_gamma_plv,
         "training_losses": losses,
         "validation_metrics": validation_eval.metrics,
         "public_test_metrics": test_eval_metrics,
@@ -443,6 +485,54 @@ def main() -> None:
     parser.add_argument("--target-rate", type=int, default=100)
     parser.add_argument("--pool-bins", type=int, default=50)
     parser.add_argument("--feature-mode", choices=["time", "spectral", "both"], default="time")
+    parser.add_argument(
+        "--use-plv",
+        action="store_true",
+        help="Append per-window PLV (phase locking) features (bandpass + Hilbert phase)",
+    )
+    parser.add_argument(
+        "--use-riemannian",
+        action="store_true",
+        help="Append per-window Riemannian / SPD covariance embedding features",
+    )
+    parser.add_argument(
+        "--no-existing-features",
+        action="store_true",
+        help="Disable pooled time + Welch spectral features (for PLV-only / Riemannian-only ablations)",
+    )
+    parser.add_argument(
+        "--plv-feature-mode",
+        choices=["summary", "full_matrix"],
+        default="summary",
+        help="PLV: per-band mean/std/max of upper triangle, or flattened upper triangle per band",
+    )
+    parser.add_argument(
+        "--riemannian-mode",
+        choices=["tangent_space", "log_euclidean"],
+        default="tangent_space",
+        help="Covariance embedding: pyriemann tangent map at I if installed; else SPD matrix log fallback",
+    )
+    parser.add_argument(
+        "--covariance-regularization",
+        type=float,
+        default=1e-6,
+        help="Diagonal jitter added to sample covariance before log / tangent map",
+    )
+    parser.add_argument(
+        "--plv-no-low-gamma",
+        action="store_true",
+        help="Exclude 30-45 Hz band from PLV (when sampling rate allows)",
+    )
+    parser.add_argument(
+        "--feature-debug",
+        action="store_true",
+        help="On first forecaster clip: assert finite features and print shape",
+    )
+    parser.add_argument(
+        "--feature-log",
+        action="store_true",
+        help="Per file: log window count and concatenated feature dimension during featurization",
+    )
     parser.add_argument("--epochs", type=int, default=6)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--learning-rate", type=float, default=1e-3)

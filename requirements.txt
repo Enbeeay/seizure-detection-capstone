@@ -6,3 +6,6 @@ scikit-learn==1.6.1
 pandas==3.0.2
 torch==2.11.0
 tqdm==4.67.1
+
+# Optional (Riemannian): `pip install pyriemann` enables the true reference tangent map in
+# `--riemannian-mode tangent_space`; without it, the same mode uses an SPD matrix-log fallback.
