@@ -13,6 +13,7 @@ from sklearn.metrics import accuracy_score, average_precision_score, confusion_m
 from sklearn.model_selection import train_test_split
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
+from tqdm.auto import tqdm
 
 from eeg_demo.dataset import ClipRecord, index_dataset
 
@@ -228,6 +229,8 @@ def train_model(
     epochs: int,
     learning_rate: float,
     device: torch.device,
+    *,
+    show_progress: bool = True,
 ) -> list[float]:
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -235,21 +238,39 @@ def train_model(
     losses: list[float] = []
 
     model.to(device)
-    for _ in range(epochs):
-        model.train()
-        total_loss = 0.0
-        total_examples = 0
-        for history, target in loader:
-            history = history.to(device=device, dtype=torch.float32)
-            target = target.to(device=device, dtype=torch.float32)
-            optimizer.zero_grad()
-            prediction = model(history)
-            loss = criterion(prediction, target)
-            loss.backward()
-            optimizer.step()
-            total_loss += float(loss.item()) * len(history)
-            total_examples += len(history)
-        losses.append(total_loss / max(total_examples, 1))
+    n_batches = len(loader)
+    if n_batches == 0:
+        return []
+    total_steps = epochs * n_batches
+    pbar = tqdm(
+        total=total_steps,
+        desc="Training",
+        unit="batch",
+        disable=not show_progress,
+        smoothing=0.05,
+    )
+    try:
+        for epoch in range(epochs):
+            model.train()
+            total_loss = 0.0
+            total_examples = 0
+            for history, target in loader:
+                history = history.to(device=device, dtype=torch.float32)
+                target = target.to(device=device, dtype=torch.float32)
+                optimizer.zero_grad()
+                prediction = model(history)
+                loss = criterion(prediction, target)
+                loss.backward()
+                optimizer.step()
+                total_loss += float(loss.item()) * len(history)
+                total_examples += len(history)
+                pbar.set_postfix(epoch=f"{epoch + 1}/{epochs}", loss=f"{float(loss.item()):.4f}")
+                pbar.update(1)
+            epoch_mean = total_loss / max(total_examples, 1)
+            losses.append(epoch_mean)
+            pbar.set_postfix(epoch=f"{epoch + 1}/{epochs}", epoch_loss=f"{epoch_mean:.4f}")
+    finally:
+        pbar.close()
     return losses
 
 

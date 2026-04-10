@@ -41,8 +41,8 @@ def main() -> None:
     parser.add_argument(
         "--dataset-root",
         type=Path,
-        default=Path("D:/seizure-detection-data"),
-        help="Root directory containing Kaggle-style .mat files",
+        default=Path("D:/seizure-detection-data-train"),
+        help="Root directory containing Kaggle-style .mat files (labeled train clips; use your train folder)",
     )
     parser.add_argument("--patient", type=int, help="Patient id to auto-select clips for")
     parser.add_argument(

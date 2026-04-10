@@ -93,7 +93,12 @@ def parse_clip_filename(path: str | Path) -> ClipRecord:
 def index_dataset(root: str | Path, recursive: bool = True) -> list[ClipRecord]:
     root_path = Path(root)
     if not root_path.exists():
-        raise FileNotFoundError(f"Dataset root not found: {root_path}")
+        raise FileNotFoundError(
+            f"Dataset root not found: {root_path}. "
+            "Use an existing folder path (for example your directory that contains Pat*Train_*_*.mat files)."
+        )
+    if not root_path.is_dir():
+        raise NotADirectoryError(f"Dataset root is not a directory: {root_path}")
 
     glob_pattern = "**/*.mat" if recursive else "*.mat"
     records: list[ClipRecord] = []

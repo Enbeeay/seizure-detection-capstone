@@ -18,8 +18,8 @@ def main() -> None:
     parser.add_argument(
         "--dataset-root",
         type=Path,
-        default=Path("D:/seizure-detection-data"),
-        help="Root directory containing .mat files",
+        default=Path("D:/seizure-detection-data-train"),
+        help="Root directory containing .mat files (train or test folder)",
     )
     args = parser.parse_args()
 

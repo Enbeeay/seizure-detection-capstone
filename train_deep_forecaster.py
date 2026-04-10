@@ -10,7 +10,9 @@ import numpy as np
 import pandas as pd
 import torch
 from sklearn.model_selection import train_test_split
+from tqdm.auto import tqdm
 
+from eeg_demo.dataset import filter_records
 from eeg_demo.deep_forecaster import (
     PreparedClip,
     SequenceForecaster,
@@ -28,10 +30,28 @@ from eeg_demo.deep_forecaster import (
 )
 
 
-def prepare_many(records, target_rate, window_seconds, stride_seconds, pool_bins, feature_mode):
+def prepare_many(
+    records,
+    target_rate,
+    window_seconds,
+    stride_seconds,
+    pool_bins,
+    feature_mode,
+    *,
+    desc: str = "Prepare clips",
+    show_progress: bool = True,
+):
     clips: list[PreparedClip] = []
-    for idx, record in enumerate(records, start=1):
-        print(f"[prepare] {idx}/{len(records)} {record.path.name}")
+    iterator = tqdm(
+        records,
+        desc=desc,
+        unit="file",
+        disable=not show_progress,
+        smoothing=0.05,
+    )
+    for record in iterator:
+        name = record.path.name
+        iterator.set_postfix_str(name[:48] + ("…" if len(name) > 48 else ""))
         try:
             clips.append(
                 prepare_clip(
@@ -44,14 +64,30 @@ def prepare_many(records, target_rate, window_seconds, stride_seconds, pool_bins
                 )
             )
         except Exception as exc:
-            print(f"[skip] {record.path.name}: {exc}")
+            tqdm.write(f"[skip] {record.path.name}: {exc}")
     return clips
 
 
-def score_many(model, clips, history_steps, device):
+def score_many(
+    model,
+    clips,
+    history_steps,
+    device,
+    *,
+    desc: str = "Score clips",
+    show_progress: bool = True,
+):
     rows = []
-    for idx, clip in enumerate(clips, start=1):
-        print(f"[score] {idx}/{len(clips)} {clip.record.path.name}")
+    iterator = tqdm(
+        clips,
+        desc=desc,
+        unit="file",
+        disable=not show_progress,
+        smoothing=0.05,
+    )
+    for clip in iterator:
+        name = clip.record.path.name
+        iterator.set_postfix_str(name[:48] + ("…" if len(name) > 48 else ""))
         scores = score_clip(model, clip, history_steps=history_steps, device=device)
         summary = summarize_scores(scores)
         rows.append(
@@ -71,8 +107,56 @@ def score_many(model, clips, history_steps, device):
     return pd.DataFrame(rows)
 
 
+def three_way_split_records(
+    records: list,
+    random_state: int,
+    calibration_fraction: float,
+    validation_fraction: float,
+) -> tuple[list, list, list]:
+    if len(records) < 3:
+        raise ValueError(f"Need at least 3 labeled train clips for split, got {len(records)}")
+    labels = [record.label_id for record in records]
+    n0 = sum(1 for lab in labels if lab == 0)
+    n1 = sum(1 for lab in labels if lab == 1)
+    use_stratify = n0 >= 2 and n1 >= 2
+    if use_stratify:
+        try:
+            return stratified_three_way_split(
+                records,
+                random_state=random_state,
+                calibration_fraction=calibration_fraction,
+                validation_fraction=validation_fraction,
+            )
+        except ValueError:
+            tqdm.write("[warn] stratified three-way split failed; using random split")
+    holdout_frac = calibration_fraction + validation_fraction
+    train_part, holdout = train_test_split(
+        records,
+        test_size=holdout_frac,
+        random_state=random_state,
+        shuffle=True,
+    )
+    if len(holdout) < 2:
+        raise ValueError("Holdout split too small; need more train clips or lower calibration/validation fractions")
+    val_share = validation_fraction / holdout_frac
+    calib_part, val_part = train_test_split(
+        holdout,
+        test_size=val_share,
+        random_state=random_state,
+        shuffle=True,
+    )
+    return train_part, calib_part, val_part
+
+
 def save_histogram(output_path: Path, frame: pd.DataFrame, title: str) -> None:
     plt.figure(figsize=(8, 5))
+    if len(frame) == 0 or "probability" not in frame.columns or "label" not in frame.columns:
+        plt.text(0.5, 0.5, "No data", ha="center", va="center", transform=plt.gca().transAxes)
+        plt.title(title)
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=150)
+        plt.close()
+        return
     for label_value, label_name in [(0, "Interictal"), (1, "Preictal")]:
         subset = frame.loc[frame["label"] == label_value, "probability"]
         if len(subset) > 0:
@@ -84,6 +168,266 @@ def save_histogram(output_path: Path, frame: pd.DataFrame, title: str) -> None:
     plt.tight_layout()
     plt.savefig(output_path, dpi=150)
     plt.close()
+
+
+def _subsample_train_records(records, max_files: int | None, random_state: int) -> list:
+    if not max_files or len(records) <= max_files:
+        return list(records)
+    labels = [record.label_id for record in records]
+    if len(set(labels)) > 1:
+        subset, _ = train_test_split(
+            records,
+            train_size=max_files,
+            stratify=labels,
+            random_state=random_state,
+        )
+        return list(subset)
+    return list(records[:max_files])
+
+
+def _subsample_public_test_records(records, max_files: int | None, random_state: int) -> list:
+    if not max_files or len(records) <= max_files:
+        return list(records)
+    labels = [record.label_id for record in records]
+    if len(set(labels)) > 1 and max_files < len(records):
+        subset, _ = train_test_split(
+            records,
+            train_size=max_files,
+            stratify=labels,
+            random_state=random_state,
+        )
+        return list(subset)
+    return list(records[:max_files])
+
+
+def run_single_training(
+    args,
+    output_dir: Path,
+    train_records: list,
+    public_test_records: list,
+    all_test_records: list,
+    *,
+    patient_id: int | None = None,
+    show_progress: bool = True,
+) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    train_records = _subsample_train_records(train_records, args.max_train_files, args.random_state)
+    public_test_records = _subsample_public_test_records(
+        public_test_records, args.max_test_files, args.random_state
+    )
+
+    forecaster_records, calibration_records, validation_records = three_way_split_records(
+        train_records,
+        random_state=args.random_state,
+        calibration_fraction=args.calibration_fraction,
+        validation_fraction=args.validation_fraction,
+    )
+
+    pid_note = f" patient={patient_id}" if patient_id is not None else ""
+    print(
+        f"[split{pid_note}] forecaster={len(forecaster_records)} calibration={len(calibration_records)} "
+        f"validation={len(validation_records)} public_test={len(public_test_records)} all_test={len(all_test_records)}"
+    )
+
+    _prep_kw = {"show_progress": show_progress}
+    forecaster_clips = prepare_many(
+        forecaster_records,
+        args.target_rate,
+        args.window_seconds,
+        args.stride_seconds,
+        args.pool_bins,
+        args.feature_mode,
+        desc="Prepare forecaster",
+        **_prep_kw,
+    )
+    calibration_clips = prepare_many(
+        calibration_records,
+        args.target_rate,
+        args.window_seconds,
+        args.stride_seconds,
+        args.pool_bins,
+        args.feature_mode,
+        desc="Prepare calibration",
+        **_prep_kw,
+    )
+    validation_clips = prepare_many(
+        validation_records,
+        args.target_rate,
+        args.window_seconds,
+        args.stride_seconds,
+        args.pool_bins,
+        args.feature_mode,
+        desc="Prepare validation",
+        **_prep_kw,
+    )
+    public_test_clips = prepare_many(
+        public_test_records,
+        args.target_rate,
+        args.window_seconds,
+        args.stride_seconds,
+        args.pool_bins,
+        args.feature_mode,
+        desc="Prepare public test",
+        **_prep_kw,
+    )
+    all_test_clips = prepare_many(
+        all_test_records,
+        args.target_rate,
+        args.window_seconds,
+        args.stride_seconds,
+        args.pool_bins,
+        args.feature_mode,
+        desc="Prepare all test",
+        **_prep_kw,
+    )
+
+    input_dim = forecaster_clips[0].vectors.shape[1]
+    dataset = WindowSequenceDataset(forecaster_clips, history_steps=args.history_steps)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[device] {device}")
+    print(f"[dataset] sequence_examples={len(dataset)} input_dim={input_dim}")
+
+    model = SequenceForecaster(input_dim=input_dim)
+    losses = train_model(
+        model=model,
+        dataset=dataset,
+        batch_size=args.batch_size,
+        epochs=args.epochs,
+        learning_rate=args.learning_rate,
+        device=device,
+        show_progress=show_progress,
+    )
+
+    calibration_frame = score_many(
+        model, calibration_clips, args.history_steps, device, desc="Score calibration", show_progress=show_progress
+    )
+    validation_frame = score_many(
+        model, validation_clips, args.history_steps, device, desc="Score validation", show_progress=show_progress
+    )
+    public_test_frame = score_many(
+        model, public_test_clips, args.history_steps, device, desc="Score public test", show_progress=show_progress
+    )
+    all_test_frame = score_many(
+        model, all_test_clips, args.history_steps, device, desc="Score all test", show_progress=show_progress
+    )
+
+    summary_columns = ["score_mean", "score_std", "score_max", "score_p90", "score_p95"]
+    calib_X = calibration_frame[summary_columns].to_numpy()
+    calib_y = calibration_frame["label"].to_numpy()
+    if len(np.unique(calib_y)) < 2:
+        raise ValueError(
+            "Calibration set has only one class; increase train clips, relax --max-train-files, "
+            "or lower calibration/validation fractions."
+        )
+    calibrator = fit_calibrator(calib_X, calib_y)
+
+    validation_probabilities = calibrator.predict_proba(validation_frame[summary_columns].to_numpy())[:, 1]
+    validation_eval = evaluate_probabilities(validation_frame["label"].to_numpy(), validation_probabilities)
+    validation_frame["probability"] = validation_eval.probabilities
+    validation_frame["predicted_label"] = validation_eval.predictions
+
+    if len(public_test_frame) == 0:
+        tqdm.write("[warn] no public test clips; public_test_metrics omitted")
+        public_test_frame = pd.DataFrame(
+            columns=[
+                "path",
+                "filename",
+                "patient_id",
+                "segment_id",
+                "label",
+                "score_mean",
+                "score_std",
+                "score_max",
+                "score_p90",
+                "score_p95",
+                "probability",
+                "predicted_label",
+            ]
+        )
+        test_eval_metrics: dict = {}
+    else:
+        public_test_probabilities = calibrator.predict_proba(public_test_frame[summary_columns].to_numpy())[:, 1]
+        test_eval = evaluate_probabilities(public_test_frame["label"].to_numpy(), public_test_probabilities)
+        public_test_frame["probability"] = test_eval.probabilities
+        public_test_frame["predicted_label"] = test_eval.predictions
+        test_eval_metrics = test_eval.metrics
+
+    if len(all_test_frame) > 0:
+        all_test_probabilities = calibrator.predict_proba(all_test_frame[summary_columns].to_numpy())[:, 1]
+        all_test_frame["probability"] = all_test_probabilities
+        all_test_frame["predicted_label"] = (all_test_probabilities >= 0.5).astype(np.int32)
+    else:
+        all_test_frame = pd.DataFrame(
+            columns=[
+                "path",
+                "filename",
+                "patient_id",
+                "segment_id",
+                "label",
+                "score_mean",
+                "score_std",
+                "score_max",
+                "score_p90",
+                "score_p95",
+                "probability",
+                "predicted_label",
+            ]
+        )
+
+    validation_frame.to_csv(output_dir / "validation_predictions.csv", index=False)
+    public_test_frame.to_csv(output_dir / "public_test_predictions.csv", index=False)
+    all_test_frame.to_csv(output_dir / "all_test_predictions.csv", index=False)
+
+    torch.save(model.state_dict(), output_dir / "sequence_forecaster.pt")
+    joblib.dump(calibrator, output_dir / "probability_calibrator.joblib")
+
+    plt.figure(figsize=(8, 4))
+    plt.plot(np.arange(1, len(losses) + 1), losses, marker="o")
+    plt.xlabel("Epoch")
+    plt.ylabel("Training loss")
+    plt.title("Sequence Forecaster Training Loss")
+    plt.tight_layout()
+    plt.savefig(output_dir / "training_loss.png", dpi=150)
+    plt.close()
+
+    hist_val_title = "Validation Probability Separation"
+    if patient_id is not None:
+        hist_val_title = f"Patient {patient_id} — {hist_val_title}"
+    save_histogram(output_dir / "validation_probability_histogram.png", validation_frame, hist_val_title)
+    hist_pub_title = "Public Test Probability Separation"
+    if patient_id is not None:
+        hist_pub_title = f"Patient {patient_id} — {hist_pub_title}"
+    save_histogram(
+        output_dir / "public_test_probability_histogram.png",
+        public_test_frame,
+        hist_pub_title,
+    )
+
+    metrics = {
+        "patient_id": patient_id,
+        "device": str(device),
+        "forecaster_train_files": len(forecaster_clips),
+        "calibration_files": len(calibration_clips),
+        "validation_files": len(validation_clips),
+        "public_test_files": len(public_test_clips),
+        "all_test_files": len(all_test_clips),
+        "sequence_examples": len(dataset),
+        "epochs": args.epochs,
+        "history_steps": args.history_steps,
+        "window_seconds": args.window_seconds,
+        "stride_seconds": args.stride_seconds,
+        "target_rate": args.target_rate,
+        "pool_bins": args.pool_bins,
+        "feature_mode": args.feature_mode,
+        "training_losses": losses,
+        "validation_metrics": validation_eval.metrics,
+        "public_test_metrics": test_eval_metrics,
+    }
+    (output_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+
+    print(json.dumps(metrics, indent=2))
+    print(f"[saved] {output_dir}")
 
 
 def main() -> None:
@@ -106,9 +450,43 @@ def main() -> None:
     parser.add_argument("--validation-fraction", type=float, default=0.2)
     parser.add_argument("--max-train-files", type=int)
     parser.add_argument("--max-test-files", type=int)
+    parser.add_argument(
+        "--per-patient",
+        action="store_true",
+        help="Train one model per patient (train clips for patient i only; test clips for patient i only)",
+    )
+    parser.add_argument(
+        "--patient",
+        type=int,
+        default=None,
+        metavar="ID",
+        help="With --per-patient: only this patient. Without --per-patient: single run using only this patient's clips",
+    )
+    parser.add_argument(
+        "--smoke-patient",
+        type=int,
+        nargs="?",
+        const=1,
+        default=None,
+        metavar="ID",
+        help="Smoke test: same as --per-patient --patient ID (default ID=1); caps to 32 train / 24 public test files if those flags unset",
+    )
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable tqdm bars (prepare, train, score)",
+    )
     args = parser.parse_args()
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    if args.smoke_patient is not None:
+        args.per_patient = True
+        args.patient = args.smoke_patient
+        if args.max_train_files is None:
+            args.max_train_files = 32
+        if args.max_test_files is None:
+            args.max_test_files = 24
+
+    show_progress = not args.no_progress
 
     train_records = collect_records(args.train_root)
     all_test_records, public_test_records = apply_public_test_labels(
@@ -116,162 +494,59 @@ def main() -> None:
         args.test_label_csv,
     )
 
-    if args.max_train_files:
-        labels = [record.label_id for record in train_records]
-        train_records, _ = train_test_split(
-            train_records,
-            train_size=args.max_train_files,
-            stratify=labels,
-            random_state=args.random_state,
-        )
-    if args.max_test_files:
-        labels = [record.label_id for record in public_test_records]
-        if len(set(labels)) > 1 and args.max_test_files < len(public_test_records):
-            public_test_records, _ = train_test_split(
-                public_test_records,
-                train_size=args.max_test_files,
-                stratify=labels,
-                random_state=args.random_state,
-            )
+    if args.per_patient:
+        train_ids = sorted({r.patient_id for r in train_records})
+        if args.patient is not None:
+            if args.patient not in train_ids:
+                raise ValueError(
+                    f"No train clips for patient {args.patient}; available train patient ids: {train_ids[:20]}"
+                    + (" ..." if len(train_ids) > 20 else "")
+                )
+            patient_ids = [args.patient]
         else:
-            public_test_records = public_test_records[: args.max_test_files]
+            patient_ids = train_ids
 
-    forecaster_records, calibration_records, validation_records = stratified_three_way_split(
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        for pid in patient_ids:
+            tr = filter_records(train_records, patient_id=pid)
+            pub = filter_records(public_test_records, patient_id=pid)
+            all_t = filter_records(all_test_records, patient_id=pid)
+            if len(tr) < 3:
+                tqdm.write(f"[skip] patient {pid}: need >=3 train clips, got {len(tr)}")
+                continue
+            out = args.output_dir / f"patient_{pid}"
+            tqdm.write(f"[patient {pid}] train={len(tr)} public_test={len(pub)} all_test={len(all_t)} -> {out}")
+            try:
+                run_single_training(
+                    args,
+                    out,
+                    tr,
+                    pub,
+                    all_t,
+                    patient_id=pid,
+                    show_progress=show_progress,
+                )
+            except Exception as exc:
+                tqdm.write(f"[skip] patient {pid}: {exc}")
+        return
+
+    if args.patient is not None:
+        train_records = filter_records(train_records, patient_id=args.patient)
+        public_test_records = filter_records(public_test_records, patient_id=args.patient)
+        all_test_records = filter_records(all_test_records, patient_id=args.patient)
+        if len(train_records) < 3:
+            raise ValueError(f"Need at least 3 train clips for patient {args.patient}, got {len(train_records)}")
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    run_single_training(
+        args,
+        args.output_dir,
         train_records,
-        random_state=args.random_state,
-        calibration_fraction=args.calibration_fraction,
-        validation_fraction=args.validation_fraction,
-    )
-
-    print(
-        f"[split] forecaster={len(forecaster_records)} calibration={len(calibration_records)} validation={len(validation_records)} public_test={len(public_test_records)} all_test={len(all_test_records)}"
-    )
-
-    forecaster_clips = prepare_many(
-        forecaster_records,
-        args.target_rate,
-        args.window_seconds,
-        args.stride_seconds,
-        args.pool_bins,
-        args.feature_mode,
-    )
-    calibration_clips = prepare_many(
-        calibration_records,
-        args.target_rate,
-        args.window_seconds,
-        args.stride_seconds,
-        args.pool_bins,
-        args.feature_mode,
-    )
-    validation_clips = prepare_many(
-        validation_records,
-        args.target_rate,
-        args.window_seconds,
-        args.stride_seconds,
-        args.pool_bins,
-        args.feature_mode,
-    )
-    public_test_clips = prepare_many(
         public_test_records,
-        args.target_rate,
-        args.window_seconds,
-        args.stride_seconds,
-        args.pool_bins,
-        args.feature_mode,
-    )
-    all_test_clips = prepare_many(
         all_test_records,
-        args.target_rate,
-        args.window_seconds,
-        args.stride_seconds,
-        args.pool_bins,
-        args.feature_mode,
+        patient_id=args.patient,
+        show_progress=show_progress,
     )
-
-    input_dim = forecaster_clips[0].vectors.shape[1]
-    dataset = WindowSequenceDataset(forecaster_clips, history_steps=args.history_steps)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[device] {device}")
-    print(f"[dataset] sequence_examples={len(dataset)} input_dim={input_dim}")
-
-    model = SequenceForecaster(input_dim=input_dim)
-    losses = train_model(
-        model=model,
-        dataset=dataset,
-        batch_size=args.batch_size,
-        epochs=args.epochs,
-        learning_rate=args.learning_rate,
-        device=device,
-    )
-
-    calibration_frame = score_many(model, calibration_clips, args.history_steps, device)
-    validation_frame = score_many(model, validation_clips, args.history_steps, device)
-    public_test_frame = score_many(model, public_test_clips, args.history_steps, device)
-    all_test_frame = score_many(model, all_test_clips, args.history_steps, device)
-
-    summary_columns = ["score_mean", "score_std", "score_max", "score_p90", "score_p95"]
-    calibrator = fit_calibrator(calibration_frame[summary_columns].to_numpy(), calibration_frame["label"].to_numpy())
-
-    validation_probabilities = calibrator.predict_proba(validation_frame[summary_columns].to_numpy())[:, 1]
-    validation_eval = evaluate_probabilities(validation_frame["label"].to_numpy(), validation_probabilities)
-    validation_frame["probability"] = validation_eval.probabilities
-    validation_frame["predicted_label"] = validation_eval.predictions
-
-    public_test_probabilities = calibrator.predict_proba(public_test_frame[summary_columns].to_numpy())[:, 1]
-    test_eval = evaluate_probabilities(public_test_frame["label"].to_numpy(), public_test_probabilities)
-    public_test_frame["probability"] = test_eval.probabilities
-    public_test_frame["predicted_label"] = test_eval.predictions
-
-    all_test_probabilities = calibrator.predict_proba(all_test_frame[summary_columns].to_numpy())[:, 1]
-    all_test_frame["probability"] = all_test_probabilities
-    all_test_frame["predicted_label"] = (all_test_probabilities >= 0.5).astype(np.int32)
-
-    validation_frame.to_csv(args.output_dir / "validation_predictions.csv", index=False)
-    public_test_frame.to_csv(args.output_dir / "public_test_predictions.csv", index=False)
-    all_test_frame.to_csv(args.output_dir / "all_test_predictions.csv", index=False)
-
-    torch.save(model.state_dict(), args.output_dir / "sequence_forecaster.pt")
-    joblib.dump(calibrator, args.output_dir / "probability_calibrator.joblib")
-
-    plt.figure(figsize=(8, 4))
-    plt.plot(np.arange(1, len(losses) + 1), losses, marker="o")
-    plt.xlabel("Epoch")
-    plt.ylabel("Training loss")
-    plt.title("Sequence Forecaster Training Loss")
-    plt.tight_layout()
-    plt.savefig(args.output_dir / "training_loss.png", dpi=150)
-    plt.close()
-
-    save_histogram(args.output_dir / "validation_probability_histogram.png", validation_frame, "Validation Probability Separation")
-    save_histogram(
-        args.output_dir / "public_test_probability_histogram.png",
-        public_test_frame,
-        "Public Test Probability Separation",
-    )
-
-    metrics = {
-        "device": str(device),
-        "forecaster_train_files": len(forecaster_clips),
-        "calibration_files": len(calibration_clips),
-        "validation_files": len(validation_clips),
-        "public_test_files": len(public_test_clips),
-        "all_test_files": len(all_test_clips),
-        "sequence_examples": len(dataset),
-        "epochs": args.epochs,
-        "history_steps": args.history_steps,
-        "window_seconds": args.window_seconds,
-        "stride_seconds": args.stride_seconds,
-        "target_rate": args.target_rate,
-        "pool_bins": args.pool_bins,
-        "feature_mode": args.feature_mode,
-        "training_losses": losses,
-        "validation_metrics": validation_eval.metrics,
-        "public_test_metrics": test_eval.metrics,
-    }
-    (args.output_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
-
-    print(json.dumps(metrics, indent=2))
-    print(f"[saved] {args.output_dir}")
 
 
 if __name__ == "__main__":

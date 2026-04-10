@@ -25,10 +25,12 @@ Use the local Unreal Engine Python plus the vendored dependencies:
 preictal clip for the cleanest first demo.
 
 You can also point the script at your dataset root and let it pick files based
-on the Kaggle naming pattern:
+on the Kaggle naming pattern (default expects labeled **train** clips under
+`D:\seizure-detection-data-train`; test clips live under
+`D:\seizure-detection-data-test`):
 
 ```powershell
-& .\run_demo.py --dataset-root D:\seizure-detection-data --patient 1
+& .\run_demo.py --dataset-root D:\seizure-detection-data-train --patient 1
 ```
 
 This expects filenames in one of these formats:
