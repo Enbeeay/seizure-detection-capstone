@@ -86,3 +86,25 @@ Main outputs are written to `outputs/deep_forecaster/`:
 - `sequence_forecaster.pt`
 - `probability_calibrator.joblib`
 - `training_loss.png`
+
+### PLV-LSTM Classifier Mode (new)
+
+To enable the redesigned patient-specific clip classifier based on dynamic PLV sequences:
+
+```powershell
+.\.venv\Scripts\python.exe .\train_deep_forecaster.py --train-root D:\seizure-detection-data-train --test-root D:\seizure-detection-data-test --test-label-csv D:\contest_test_data_labels_public.csv --per-patient --patient 1 --use-plv-lstm --plv-window-seconds 5 --plv-stride-seconds 2 --plv-band beta --target-rate 100 --threshold-strategy max_f1
+```
+
+Mode behavior:
+
+- computes one PLV upper-triangle vector per sliding window
+- keeps the full per-clip PLV sequence (no summary stats before classification)
+- trains a variable-length LSTM clip classifier and outputs one probability per clip
+- tunes threshold on validation (`max_f1`) and applies it to held-out test predictions
+
+Helpful mode-specific flags:
+
+- `--use-plv-lstm`
+- `--plv-window-seconds`, `--plv-stride-seconds`, `--plv-band`
+- `--lstm-hidden-size`, `--lstm-num-layers`, `--lstm-dropout`
+- `--shape-debug` (prints key tensor shapes during train/inference)
